@@ -244,7 +244,12 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
             for k, v in results.items():
                 f.write('<p>' + str(k) + ' : ' + str(v) + '</p>\n')
             f.write('</body></html>\n')
-
+            
+    def shortHelpString(self):
+        return self.tr('''This algorithm takes 2 line layers as input, with only 1 entity in each layer. Layers are standardised and then compared using spearman correlation coefficient. Output is spearman coefficient and p-value, and a plot of the 2 standardised lines. The result is independant of rotation, scale and translation.''')
+    
+    def helpUrl(self):
+        return "https://github.com/juliepierson/qgis_line_similarity"
 
     def name(self):
         """
