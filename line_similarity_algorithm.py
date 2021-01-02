@@ -30,7 +30,6 @@ __copyright__ = '(C) 2020 by Julie Pierson, UMR 6554 LETG, CNRS'
 
 __revision__ = '$Format:%H$'
 
-import codecs
 import math
 import pandas as pd
 import numpy as np
@@ -43,7 +42,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingAlgorithm,
                        QgsProcessingParameterVectorLayer,
                        QgsProcessingParameterField,
-                       QgsProcessingParameterFileDestination)
+                       QgsProcessingParameterFolderDestination)
 
         
 class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
@@ -68,7 +67,7 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
     INPUT2 = 'INPUT2'
     ID_INPUT1 = 'ID_INPUT1'
     ID_INPUT2 = 'ID_INPUT2'
-    OUTPUT_HTML_FILE = 'OUTPUT_HTML_FILE'
+    OUTPUT_FOLDER = 'OUTPUT_FOLDER'
 
     def initAlgorithm(self, config):
         """
@@ -110,12 +109,12 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
                 self.INPUT2
             )
         )
-        # html output
+
+        # output folder
         self.addParameter(
-                QgsProcessingParameterFileDestination(
-                        self.OUTPUT_HTML_FILE, 
-                            self.tr('Statistics'),
-                            self.tr('HTML files (*.html)'), 
+                QgsProcessingParameterFolderDestination(
+                        self.OUTPUT_FOLDER, 
+                            self.tr('Output folder'),
                             None, True))
 
     def processAlgorithm(self, parameters, context, feedback):
@@ -128,7 +127,8 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
         field1 = self.parameterAsString(parameters, self.ID_INPUT1, context)
         layer2 = self.parameterAsVectorLayer(parameters, self.INPUT2, context)
         field2 = self.parameterAsString(parameters, self.ID_INPUT2, context)
-        output_file = self.parameterAsFileOutput(parameters, self.OUTPUT_HTML_FILE, context)
+#        output_file = self.parameterAsFileOutput(parameters, self.OUTPUT_HTML_FILE, context)
+        output_folder = self.parameterAsFile(parameters, self.OUTPUT_FOLDER, context)
 
         # LET'S GO !
         
@@ -137,10 +137,13 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
         lineLength1 = self.getLength(layer1, field1)
         lineLength2 = self.getLength(layer2, field2)
         QgsMessageLog.logMessage(('lineLength1 : ' + str(lineLength1)), 'LineSimilarity')
+        QgsMessageLog.logMessage(('lineLength2 : ' + str(lineLength2)), 'LineSimilarity')
         
         # retrieves list of line ids from lineLength dictionaries
         lineIds1 = lineLength1.keys()
         lineIds2 = lineLength2.keys()
+        QgsMessageLog.logMessage(('lineIds1 : ' + str(lineIds1)), 'LineSimilarity')
+        QgsMessageLog.logMessage(('lineIds2 : ' + str(lineIds2)), 'LineSimilarity')
         
         # get all vertex coordinates of lines in each layer, one dictionary per layer with one list for each line
         # pointsCoord = {"line1" : [[xA, yA], [xB, yB], ...], "line2" : [[xA, yA], [xB, yB], ...], ...}
@@ -161,11 +164,12 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
         
         # create plots for each line, distance as x and angle as y, color for layer
         # this step is optional, only for visualising results
-        # self.plotLine(df) TODO : update plotLine for multiple lines
+        self.plotLine(df)
         
         # create one dataframe for each layer, 1 column position + as many columns as lines for angle
         dfCorr1, dfCorr2 = self.getYvalues(df, df1, df2, layer1.name(), layer2.name())
         QgsMessageLog.logMessage(('dfCorr1 : ' + str(dfCorr1)), 'LineSimilarity')
+        QgsMessageLog.logMessage(('dfCorr2 : ' + str(dfCorr2)), 'LineSimilarity')
         
         # empty dictionary for results
         results = {}
@@ -191,9 +195,14 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
 #        results['p-value Wilcoxon'] = pvalueWilcoxon
         
         # reurn results
-        if output_file:
-            self.createHTML(output_file, results, layer1.name(), layer2.name())
-            results[self.OUTPUT_HTML_FILE] = output_file
+        if output_folder:
+#            self.createHTML(output_file, results, layer1.name(), layer2.name())
+#            results[self.OUTPUT_HTML_FILE] = output_file
+            # array for each layer
+            self.createCSV(output_folder, layer1.name(), dfCorr1)
+            self.createCSV(output_folder, layer2.name(), dfCorr2)
+            for key, value in results.items():
+                self.createCSV(output_folder, key, value)
 
         return results
     
@@ -220,7 +229,7 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
             pointsCoords[idValue] = [[point.x(), point.y()] for point in pl]
         return pointsCoords
     
-    # calculate angle from 3 points coordinates a, b and c where each point = [x, y]
+    # calculate angle at b from 3 points coordinates a, b and c where each point = [x, y]
     # angle is measured anti-clockwise
     # https://manivannan-ai.medium.com/find-the-angle-between-three-points-from-2d-using-python-348c513e2cd
     def getAngle(self, a, b, c):
@@ -237,21 +246,21 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
     # angle gets calculated with getAngle function
     # result is a dictionary, each item a list where each element = [position, angle]
     # {"line1" : [[0.12, 94], [0.25, 178], ..., [0.93, 134]], "line2" : [[0.09, 88], [0.28, 192], ..., [0.95, 129]], ...}
-    def getPointInfo(self, lineIds, pointCoords, lineLength):
-        pointInfos = dict.fromkeys(lineIds, [])
+    def getPointInfo(self, lineIds, pointsCoord, lineLength):
+        pointInfos = {k:[] for k in lineIds}
         # for each line
-        for key, value in pointCoords.items():
+        for key, value in pointsCoord.items():
             distance = 0
             # for each point except 1st and last
-            for i, point in enumerate(pointCoords[key][1:-1]):
+            for i, point in enumerate(value[1:-1]):
                 # calculates distance to previous vertex
-                distToPreviousPoint = self.getDistance(point, pointCoords[key][i])
+                distToPreviousPoint = self.getDistance(point, value[i])
                 # adds it to previous calculated distance
                 distance = distance + distToPreviousPoint
                 # standardise distance between 0 and 1
                 distanceStandardised = distance / lineLength[key]
                 # calculate angle between previous vertex, vertex and next vertex
-                angle = self.getAngle(pointCoords[key][i], point, pointCoords[key][i+2])
+                angle = self.getAngle(value[i], point, value[i+2])
                 # stores the distance and angle for each vertex
                 pointInfos[key].append([distanceStandardised, angle])
         return pointInfos
@@ -278,9 +287,9 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
     
     # create line plot with distance as x and angle as y, for the 2 layers
     # this step is optional, only for visualising results
-    def plotLine(self, df): # TODO : check if ok for multiple lines ??
+    def plotLine(self, df):
         # create plot
-        fig = px.line(df, x = "distance", y = "angle", color = "layer")
+        fig = px.line(df, x = "distance", y = "angle", color = "layer", line_group = "line id", hover_name = "line id")
         # sets min, max and step for the axes
         fig.update_layout(xaxis_range=[0, 1])
         fig.update_layout(yaxis_range=[0, 360])
@@ -324,7 +333,11 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
         # supprime la colonne x de chaque dataframe
         dfSpearman1 = dfCorr1.drop(columns = ['x'])
         dfSpearman2 = dfCorr2.drop(columns = ['x'])
-        statSpearman, pvalueSpearman = stats.spearmanr(dfSpearman1, dfSpearman2, axis = None)
+        # convertit le dataframe en array numpy
+        arraySpearman1 = dfSpearman1.values
+        arraySpearman2 = dfSpearman2.values
+        # Spearman
+        statSpearman, pvalueSpearman = stats.spearmanr(arraySpearman1, arraySpearman2)
         return statSpearman, pvalueSpearman
     
     # calculate Shapiro test to know if it's ok to proceed with Student test
@@ -343,16 +356,22 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
         statWilcoxon, pvalueWilcoxon = stats.wilcoxon(dfCorr['y1'], dfCorr['y2'])
         return statWilcoxon, pvalueWilcoxon
     
-    def createHTML(self, outputFile, results, layer1, layer2):
-        with codecs.open(outputFile, 'w', encoding='utf-8') as f:
-            f.write('<html><head>\n')
-            f.write('<meta http-equiv="Content-Type" content="text/html; \
-                    charset=utf-8" /></head><body>\n')
-            entete = 'calcul de similarité entre %s et %s :\n' % (layer1, layer2)
-            f.write(entete)
-            for k, v in results.items():
-                f.write('<p>' + str(k) + ' : ' + str(v) + '</p>\n')
-            f.write('</body></html>\n')
+    # create CSV file form result array
+    def createCSV(self, output_folder, csv_name, csv_content):
+        csv_file = output_folder + '/' + csv_name + ".csv"
+        #np.savetxt(csv_name, csv_content, delimiter=",")
+        pd.DataFrame(csv_content).to_csv(csv_file)
+    
+#    def createHTML(self, outputFile, results, layer1, layer2):
+#        with codecs.open(outputFile, 'w', encoding='utf-8') as f:
+#            f.write('<html><head>\n')
+#            f.write('<meta http-equiv="Content-Type" content="text/html; \
+#                    charset=utf-8" /></head><body>\n')
+#            entete = 'calcul de similarité entre %s et %s :\n' % (layer1, layer2)
+#            f.write(entete)
+#            for k, v in results.items():
+#                f.write('<p>' + str(k) + ' : ' + str(v) + '</p>\n')
+#            f.write('</body></html>\n')
             
     def shortHelpString(self):
         return self.tr('''This algorithm takes 2 line layers as input, with only 1 entity in each layer. Layers are standardised and then compared using spearman correlation coefficient. Output is spearman coefficient and p-value, and a plot of the 2 standardised lines. The result is independant of rotation, scale and translation.''')
