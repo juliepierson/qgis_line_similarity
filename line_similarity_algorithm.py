@@ -42,7 +42,14 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingAlgorithm,
                        QgsProcessingParameterVectorLayer,
                        QgsProcessingParameterField,
-                       QgsProcessingParameterFolderDestination)
+                       QgsProcessingParameterFolderDestination,
+                       QgsProperty,
+                       QgsProject,
+                       QgsVectorLayer,
+                       QgsProcessingOutputMultipleLayers,
+                       QgsProcessingContext)
+import processing
+import qgis.utils
 
         
 class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
@@ -68,6 +75,7 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
     ID_INPUT1 = 'ID_INPUT1'
     ID_INPUT2 = 'ID_INPUT2'
     OUTPUT_FOLDER = 'OUTPUT_FOLDER'
+    OUTPUT_LAYERS = 'OUTPUT_LAYERS'
 
     def initAlgorithm(self, config):
         """
@@ -110,17 +118,28 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
             )
         )
 
-        # output folder
+        # output folder for CSV
         self.addParameter(
-                QgsProcessingParameterFolderDestination(
-                        self.OUTPUT_FOLDER, 
-                            self.tr('Output folder'),
-                            None, True))
+            QgsProcessingParameterFolderDestination(
+                self.OUTPUT_FOLDER, 
+                self.tr('Output folder for statistic results (CSV)'),
+                None, True))
+        
+        # output layers
+        self.addOutput(
+            QgsProcessingOutputMultipleLayers(
+                self.OUTPUT_LAYERS,
+                self.tr('Output layers')
+            )
+        )
+
 
     def processAlgorithm(self, parameters, context, feedback):
         """
         Here is where the processing itself takes place.
         """
+        
+        interval = 1000 # TODO : make it a parameter
 
         # Retrieve inputs and output
         layer1 = self.parameterAsVectorLayer(parameters, self.INPUT1, context)
@@ -136,48 +155,51 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
         # lineLength = {"line1" : 21.2, "line2" : 14.3, ...}
         lineLength1 = self.getLength(layer1, field1)
         lineLength2 = self.getLength(layer2, field2)
-        QgsMessageLog.logMessage(('lineLength1 : ' + str(lineLength1)), 'LineSimilarity')
-        QgsMessageLog.logMessage(('lineLength2 : ' + str(lineLength2)), 'LineSimilarity')
+        #QgsMessageLog.logMessage(('lineLength1 : ' + str(lineLength1)), 'LineSimilarity')
+        #QgsMessageLog.logMessage(('lineLength2 : ' + str(lineLength2)), 'LineSimilarity')
         
         # retrieves list of line ids from lineLength dictionaries
         lineIds1 = lineLength1.keys()
         lineIds2 = lineLength2.keys()
-        QgsMessageLog.logMessage(('lineIds1 : ' + str(lineIds1)), 'LineSimilarity')
-        QgsMessageLog.logMessage(('lineIds2 : ' + str(lineIds2)), 'LineSimilarity')
+        # TODO : check that lineIds1 and lineIds2 are the same
+        
+        # densify line vertexes so that each line in layer 1 gets one vertex every chosen interval
+        # and each line in layer 2 get as many vertex as line with same id in layer 1
+        layer1DensifyPt, layer2DensifyPt = self.densifyLines(layer1, layer2, field2, lineLength1, lineLength2, interval, context, feedback)
+        
+        # create line layer from point layers layer1densify and layer2densify
+        layer1densifyLn = self.lineFromPoint(layer1DensifyPt, field1, "layer 1 densify line", context, feedback)
+        layer2densifyLn = self.lineFromPoint(layer2DensifyPt, field2, "layer 2 densify line", context, feedback)
         
         # get all vertex coordinates of lines in each layer, one dictionary per layer with one list for each line
         # pointsCoord = {"line1" : [[xA, yA], [xB, yB], ...], "line2" : [[xA, yA], [xB, yB], ...], ...}
-        pointsCoord1 = self.getPointsCoord(layer1, field1)
-        pointsCoord2 = self.getPointsCoord(layer2, field2)
-        QgsMessageLog.logMessage(('pointsCoord1 : ' + str(pointsCoord1)), 'LineSimilarity')
-        QgsMessageLog.logMessage(('pointsCoord2 : ' + str(pointsCoord2)), 'LineSimilarity')
+        pointsCoord1 = self.getPointsCoord(layer1densifyLn, field1)
+        pointsCoord2 = self.getPointsCoord(layer2densifyLn, field2)
+        #QgsMessageLog.logMessage(('pointsCoord1 : ' + str(pointsCoord1)), 'LineSimilarity')
+        #QgsMessageLog.logMessage(('pointsCoord2 : ' + str(pointsCoord2)), 'LineSimilarity')
         
         # get for each vertex except 1st and last its distance between 0 and 1 and its angle
         # lineLength = {"line1" : [[0.12, 94], [0.25, 178], ..., [0.93, 134]], "line2" : [[0.09, 88], [0.28, 192], ..., [0.95, 129]], ...}
         pointInfos1 = self.getPointInfo(lineIds1, pointsCoord1, lineLength1)
         pointInfos2 = self.getPointInfo(lineIds2, pointsCoord2, lineLength2)
-        QgsMessageLog.logMessage(('pointInfos1 : ' + str(pointInfos1)), 'LineSimilarity')
-        QgsMessageLog.logMessage(('pointInfos2 : ' + str(pointInfos2)), 'LineSimilarity')
+        #QgsMessageLog.logMessage(('pointInfos1 : ' + str(pointInfos1)), 'LineSimilarity')
+        #QgsMessageLog.logMessage(('pointInfos2 : ' + str(pointInfos2)), 'LineSimilarity')
         
         # create dataframe with 4 columns from these infos : distance, angle, line id and layer name
         df, df1, df2 = self.createDataframe(pointInfos1, pointInfos2, layer1.name(), layer2.name())
         
-        # create plots for each line, distance as x and angle as y, color for layer
+        # create plots for each line, distance as x and angle as y, 
+        # TODO : continuous line for layer 1 and dots for layer 2, same color for same id
         # this step is optional, only for visualising results
         self.plotLine(df)
         
-        # create one dataframe for each layer, 1 column position + as many columns as lines for angle
-        dfCorr1, dfCorr2 = self.getYvalues(df, df1, df2, layer1.name(), layer2.name())
-        QgsMessageLog.logMessage(('dfCorr1 : ' + str(dfCorr1)), 'LineSimilarity')
-        QgsMessageLog.logMessage(('dfCorr2 : ' + str(dfCorr2)), 'LineSimilarity')
-        
-        # empty dictionary for results
-        results = {}
+        # create one result dataframe : 1st column for line id, next columns for stat results
+        dfResults = self.getStatResults(df1, df2, lineIds1)
         
         # calculate spearman coefficient and p-value
-        statSpearman, pvalueSpearman = self.corrSpearman(dfCorr1, dfCorr2)
-        results['Spearman'] = statSpearman
-        results['p-value Spearman'] = pvalueSpearman
+#        statSpearman, pvalueSpearman = self.corrSpearman(dfCorr1, dfCorr2)
+#        results['Spearman'] = statSpearman
+#        results['p-value Spearman'] = pvalueSpearman
         
 #        # calculate Shapiro test and p-value
 #        statShapiro, pvalueShapiro = self.shapiroTest(dfCorr)
@@ -196,15 +218,10 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
         
         # reurn results
         if output_folder:
-#            self.createHTML(output_file, results, layer1.name(), layer2.name())
-#            results[self.OUTPUT_HTML_FILE] = output_file
-            # array for each layer
-            self.createCSV(output_folder, layer1.name(), dfCorr1)
-            self.createCSV(output_folder, layer2.name(), dfCorr2)
-            for key, value in results.items():
-                self.createCSV(output_folder, key, value)
+            # create csv from dataframe, in output folder
+            self.createCSV(output_folder, "toto", dfResults)
 
-        return results
+        return {}
     
     # get total length of all lines in a line layer
     # lineLength = {"line1" : 21.2, "line2" : 14.3, ...}
@@ -216,6 +233,87 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
             geom = f.geometry()
             lineLength[idValue] = geom.length()
         return lineLength
+    
+    def densifyLines(self, layer1, layer2, field2, lineLength1, lineLength2, distance, context, feedback):
+        # add vertex at given interval (distance parameter) for layer 1 with pointsalonglines processing algorithm
+        param1 = {'INPUT':layer1,
+                  'DISTANCE':distance,
+                  'START_OFFSET':0,
+                  'END_OFFSET':0,
+                  'OUTPUT':'layer 1 densify'}
+        res = processing.run("native:pointsalonglines", param1, context=context, feedback=feedback)
+        layer1densify = res['OUTPUT']
+        # count vertex for each line in layer 1
+        nbVertexLayer1 = {}
+        for key, value in lineLength1.items():
+            nbVertexLayer1[key] = math.floor(value / distance) + 1
+        # get intervals at which points must be created in layer 2 
+        # so that each line gets as many vertex as line with same id in layer1
+        intervalLayer2 = {}
+        for key, value in nbVertexLayer1.items():
+            intervalLayer2[key] = math.floor(lineLength2[key] / value) + 1
+        # add vertex for layer 2 with pointsalongline processing algorithm
+        mymap = []
+        for k, v in intervalLayer2.items():
+            mymap.extend([k, v])
+        mymap = tuple(mymap)
+        param2 = {'INPUT':layer2,
+                  'DISTANCE': QgsProperty.fromExpression("map_get(map{}, {})".format(str(mymap), field2)) ,
+                  'START_OFFSET':0,
+                  'END_OFFSET':0,
+                  'OUTPUT':'layer 2 densify'}
+        res = processing.run("native:pointsalonglines", param2, context=context, feedback=feedback)
+        layer2densify = res['OUTPUT']
+        # load the new densified layers
+        # https://gis.stackexchange.com/a/343404
+        layer1densify = QgsVectorLayer(layer1densify, "layer 1 densify", "ogr")
+        layer2densify = QgsVectorLayer(layer2densify, "layer 2 densify", "ogr")
+#        output_layers = []
+#        output_layers.extend([layer1densify, layer2densify])
+#        context.temporaryLayerStore().addMapLayers([layer1densify, layer2densify])
+#        context.addLayerToLoadOnCompletion(
+#            layer1densify.id(),
+#            QgsProcessingContext.LayerDetails(
+#                'layer name',
+#                context.project(),
+#                self.OUTPUT_LAYERS
+#            )
+#        )
+#        context.addLayerToLoadOnCompletion(
+#            layer2densify.id(),
+#            QgsProcessingContext.LayerDetails(
+#                'layer name',
+#                context.project(),
+#                self.OUTPUT_LAYERS
+#            )
+#        )
+        #return {self.OUTPUT_LAYERS: output_layers}
+        return layer1densify, layer2densify
+    
+    def lineFromPoint(self, layerDensifyPt, idfield, layername, context, feedback):
+        # run pointstopath algorithm
+        param = {'INPUT': layerDensifyPt,
+                  'CLOSE_PATH': False,
+                  'ORDER_FIELD': 'distance',
+                  'GROUP_FIELD': idfield,
+                  'DATE_FORMAT': '',
+                  'OUTPUT': layername}
+        res = processing.run("qgis:pointstopath", param, context=context, feedback=feedback)
+        layerDensifyLn = res['OUTPUT']
+        # load resulting layer
+        layerDensifyLn = QgsVectorLayer(layerDensifyLn, layername, "ogr")
+        output_layers = []
+        output_layers.append(layerDensifyLn)
+        context.temporaryLayerStore().addMapLayer(layerDensifyLn)
+        context.addLayerToLoadOnCompletion(
+            layerDensifyLn.id(),
+            QgsProcessingContext.LayerDetails(
+                'layer name',
+                context.project(),
+                self.OUTPUT_LAYERS
+            )
+        )
+        return layerDensifyLn
     
     # get vertex coordinates from all lines in a line layer
     # {"line1" : [[xA, yA], [xB, yB], ...], "line2" : [[xA, yA], [xB, yB], ...], ...}
@@ -297,70 +395,84 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
         # show plot in web browser
         fig.show()
      
-    # gets all x values of all line in both layers
-    # and calculates corresponding y values for each line in each layer
-    # output is a dataframe for each layer,
-    # with one column for position (x) and as many columns as lines in the layer for angles (y)
-    def getYvalues(self, df, df1, df2, layerName1, layerName2):
-        dfCorr1 = pd.DataFrame()
-        dfCorr2 = pd.DataFrame()
-        # get all x values with no duplicates
-        allX = list(set(df['distance']))
-        dfCorr1['x'] = allX
-        dfCorr2['x'] = allX
-        # add one column for each line for layer 1
-        for line in df1['line id']:
-            # create a dataframe for the current line
-            dfline = df1[df1['line id'] == line]
-            # retrieve x and y values for the current line
-            xline = dfline['distance']
-            yline = dfline['angle']
-            # interpolates angle values for all x values
-            dfCorr1[line] = [np.interp(x, xline, yline) for x in allX]
-        # add one column for each line for layer2
-        for line in df2['line id']:
-            # create a dataframe for the current line
-            dfline = df2[df2['line id'] == line]
-            # retrieve x and y values for the current line
-            xline = dfline['distance']
-            yline = dfline['angle']
-            # interpolates angle values for all x values
-            dfCorr2[line] = [np.interp(x, xline, yline) for x in allX]
-        return dfCorr1, dfCorr2
+    # from dataframes df1 and df2, create dataframe with statistical results
+    # one row per line id, one column per statistical test
+    def getStatResults(self, df1, df2, lineIds1):
+        # empty list for lines to add to dfResults
+        rows_list = []
+        # for each couple of lines with same id 
+        for lineId in lineIds1:
+            QgsMessageLog.logMessage(('lineId : ' + str(lineId)), 'LineSimilarity')
+            # create empty dic for current line id results
+            lineResults = {}
+            # add line id in lineResults
+            lineResults['line id'] = lineId
+            # get line with current id for layer 1
+            line1 = df1.loc[df1['line id'] == lineId]
+            line1 = list(line1['angle'])
+            # get line with current id for layer 2
+            line2 = df2.loc[df2['line id'] == lineId]
+            line2 = list(line2['angle'])
+            QgsMessageLog.logMessage(('line1 : ' + str(line1)), 'LineSimilarity')
+            QgsMessageLog.logMessage(('line2 : ' + str(line2)), 'LineSimilarity')
+            # Spearman test
+            statSpearman, pvalueSpearman = stats.spearmanr(line1, line2)
+            lineResults['Spearman'] = round(statSpearman, 6)
+            lineResults['Spearman p-value'] = round(pvalueSpearman, 6)
+            # Shapiro test
+            statShapiro, pvalueShapiro = stats.shapiro(line1)
+            lineResults['Shapiro line 1'] = round(statShapiro, 6)
+            lineResults['Shapiro p-value line 1'] = round(pvalueShapiro, 6)
+            statShapiro, pvalueShapiro = stats.shapiro(line2)
+            lineResults['Shapiro line 2'] = round(statShapiro, 6)
+            lineResults['Shapiro p-value line 2'] = round(pvalueShapiro, 6)
+            # Student Test
+            statStudent, pvalueStudent = stats.ttest_rel(line1, line2)
+            lineResults['Student'] = round(statStudent, 6)
+            lineResults['Student p-value'] = round(pvalueStudent, 6)
+            # perform Wilocoxon test
+            statWilcoxon, pvalueWilcoxon = stats.wilcoxon(line1, line2)
+            lineResults['Wilcoxon'] = round(statWilcoxon, 6)
+            lineResults['Wilcoxon p-value'] = round(pvalueWilcoxon, 6)
+            # add current line results to dfResults
+            rows_list.append(lineResults)
+        # add all line to final df
+        dfResults = pd.DataFrame(rows_list)
+        return dfResults
         
-    # calculate correlation between the 2 variables with Spearman coefficient
-    def corrSpearman(self, dfCorr1, dfCorr2):
-        # supprime la colonne x de chaque dataframe
-        dfSpearman1 = dfCorr1.drop(columns = ['x'])
-        dfSpearman2 = dfCorr2.drop(columns = ['x'])
-        # convertit le dataframe en array numpy
-        arraySpearman1 = dfSpearman1.values
-        arraySpearman2 = dfSpearman2.values
-        # Spearman
-        statSpearman, pvalueSpearman = stats.spearmanr(arraySpearman1, arraySpearman2)
-        return statSpearman, pvalueSpearman
-    
-    # calculate Shapiro test to know if it's ok to proceed with Student test
-    def shapiroTest(self, dfCorr):
-        dfShapiro = pd.concat([dfCorr['y1'], dfCorr['y2']], axis = 1, keys=['y1', 'y2'])
-        statShapiro, pvalueShapiro = stats.shapiro(dfShapiro)
-        return statShapiro, pvalueShapiro
-    
-    # calculate correlation between the 2 variables with paired Student test
-    def studentTest(self, dfCorr):
-        statStudent, pvalueStudent = stats.ttest_rel(dfCorr['y1'], dfCorr['y2'])
-        return statStudent, pvalueStudent
-    
-    # calculate correlation between the 2 variables with Wilcoxon test
-    def wilcoxonTest(self, dfCorr):
-        statWilcoxon, pvalueWilcoxon = stats.wilcoxon(dfCorr['y1'], dfCorr['y2'])
-        return statWilcoxon, pvalueWilcoxon
+#    # calculate correlation between the 2 variables with Spearman coefficient
+#    def corrSpearman(self, dfCorr1, dfCorr2):
+#        # supprime la colonne x de chaque dataframe
+#        dfSpearman1 = dfCorr1.drop(columns = ['x'])
+#        dfSpearman2 = dfCorr2.drop(columns = ['x'])
+#        # convertit le dataframe en array numpy
+#        arraySpearman1 = dfSpearman1.values
+#        arraySpearman2 = dfSpearman2.values
+#        # Spearman
+#        statSpearman, pvalueSpearman = stats.spearmanr(arraySpearman1, arraySpearman2)
+#        return statSpearman, pvalueSpearman
+#    
+#    # calculate Shapiro test to know if it's ok to proceed with Student test
+#    def shapiroTest(self, dfCorr):
+#        dfShapiro = pd.concat([dfCorr['y1'], dfCorr['y2']], axis = 1, keys=['y1', 'y2'])
+#        statShapiro, pvalueShapiro = stats.shapiro(dfShapiro)
+#        return statShapiro, pvalueShapiro
+#    
+#    # calculate correlation between the 2 variables with paired Student test
+#    def studentTest(self, dfCorr):
+#        statStudent, pvalueStudent = stats.ttest_rel(dfCorr['y1'], dfCorr['y2'])
+#        return statStudent, pvalueStudent
+#    
+#    # calculate correlation between the 2 variables with Wilcoxon test
+#    def wilcoxonTest(self, dfCorr):
+#        statWilcoxon, pvalueWilcoxon = stats.wilcoxon(dfCorr['y1'], dfCorr['y2'])
+#        return statWilcoxon, pvalueWilcoxon
     
     # create CSV file form result array
     def createCSV(self, output_folder, csv_name, csv_content):
         csv_file = output_folder + '/' + csv_name + ".csv"
         #np.savetxt(csv_name, csv_content, delimiter=",")
-        pd.DataFrame(csv_content).to_csv(csv_file)
+        pd.DataFrame(csv_content).to_csv(csv_file, index=False)
     
 #    def createHTML(self, outputFile, results, layer1, layer2):
 #        with codecs.open(outputFile, 'w', encoding='utf-8') as f:
