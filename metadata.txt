@@ -6,11 +6,15 @@
 name=Line similarity
 qgisMinimumVersion=3.0
 description=Calculate similarity between 2 lines
-version=0.1
+version=0.2
 author=Julie Pierson, UMR 6554 LETG, CNRS
 email=julie.pierson@univ-brest.fr
 
-about=This script measures similarity between 2 line geometries, independently of translation, scale or rotation. Lines are standardised, by creating for each line an array with 2 columns and 1 line for each vertex except first and last : - 1 column for the vertex position between 0 and 1, 0 corresponding to the first vertex and 1 to the last vertex - the angle between the vertex, the previous vertex and the next one The 2 arrays are then considered as variables and the spearman correlation coefficient is calculated. Input : 2 lines layers loaded in QGIS, with only 1 line entity in each layer Output : spearman correlation coefficient and p-value, + plot for the standardized lines
+about=This script measures shape similarity between line geometries 2-by-2, independently of translation, scale or rotation.
+It takes 2 line layers as input, and their id field. Lines from each layer with same id get compared, and similarity measures using different statistical tests are computed.
+Output is a CSV with the statistical results and p-values.
+Statistical tests used are Spearman, Student and Wilcoxon. Thanks to Grégoire Le Campion (UMR Passages, CNRS) for his input on statistics !
+This plugin is added in processing, in a provider called "shape analysis".
 
 tracker=https://github.com/juliepierson/qgis_line_similarity
 repository=https://github.com/juliepierson/qgis_line_similarity
@@ -20,7 +24,9 @@ repository=https://github.com/juliepierson/qgis_line_similarity
 
 hasProcessingProvider=yes
 # Uncomment the following line and add your changelog:
-# changelog=
+changelog= Version 0.2 - 01/2021
+    - allow for multiple lines in input layers, using same id to make pairs
+    - lines in same pair get same number of vertex prior to statistical tests
 
 # Tags are comma separated with spaces allowed
 tags=python
@@ -40,7 +46,7 @@ deprecated=False
 # plugin_dependencies=
 
 Category of the plugin: Raster, Vector, Database or Web
-# category=
+category=Vector
 
 # If the plugin can run on QGIS Server.
 server=False
