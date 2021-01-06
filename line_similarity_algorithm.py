@@ -404,83 +404,37 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
             line2 = df2.loc[df2['line id'] == lineId]
             line2 = list(line2['angle'])
             # Spearman test
-            statSpearman, pvalueSpearman = stats.spearmanr(line1, line2)
-            if math.isnan(statSpearman) or math.isnan(pvalueSpearman):
-                message = f'Could not compute Spearman test for line {lineId}, perhaps not enough vertices : try with a lower interval'
-                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
-                lineResults['Spearman'] = ''
-                lineResults['Spearman p-value'] = ''
-            else:
-                lineResults['Spearman'] = round(statSpearman, 6)
-                lineResults['Spearman p-value'] = round(pvalueSpearman, 6)
+            self.tryTest(lineResults, lineId, line1, line2, 'Spearman', stats.spearmanr, [line1, line2], 'Spearman', 'Spearman p-value', feedback)
             # Shapiro test
-            statShapiro, pvalueShapiro = stats.shapiro(line1)
-            if math.isnan(statShapiro) or math.isnan(pvalueShapiro):
-                message = f'Could not compute Shapiro test for line {lineId} in layer 1, perhaps not enough vertices : try with a lower interval'
-                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
-                lineResults['Shapiro line 1'] = ''
-                lineResults['Shapiro p-value line 1'] = ''
-            else:
-                lineResults['Shapiro line 1'] = round(statShapiro, 6)
-                lineResults['Shapiro p-value line 1'] = round(pvalueShapiro, 6)
-            statShapiro, pvalueShapiro = stats.shapiro(line2)
-            if math.isnan(statShapiro) or math.isnan(pvalueShapiro):
-                message = f'Could not compute Shapiro test for line {lineId} in layer 2, perhaps not enough vertices : try with a lower interval'
-                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
-                lineResults['Shapiro line 2'] = ''
-                lineResults['Shapiro p-value line 2'] = ''
-            else:
-                lineResults['Shapiro line 2'] = round(statShapiro, 6)
-                lineResults['Shapiro p-value line 2'] = round(pvalueShapiro, 6)
-#            try:
-#                statShapiro, pvalueShapiro = stats.shapiro(line1)
-#                lineResults['Shapiro line 1'] = round(statShapiro, 6)
-#                lineResults['Shapiro p-value line 1'] = round(pvalueShapiro, 6)
-#                statShapiro, pvalueShapiro = stats.shapiro(line2)
-#                lineResults['Shapiro line 2'] = round(statShapiro, 6)
-#                lineResults['Shapiro p-value line 2'] = round(pvalueShapiro, 6)
-#            except:
-#                message = f'Could not compute Shapiro test for line {lineId}, perhaps not enough vertices : try with a lower interval'
-#                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
+            self.tryTest(lineResults, lineId, line1, line2, 'Shapiro for layer 1', stats.shapiro, [line1], 'Shapiro line 1', 'Shapiro p-value line 1', feedback)
+            self.tryTest(lineResults, lineId, line1, line2, 'Shapiro for layer 2', stats.shapiro, [line2], 'Shapiro line 2', 'Shapiro p-value line 2', feedback)
             # Student Test
-            statStudent, pvalueStudent = stats.ttest_rel(line1, line2)
-            if math.isnan(statStudent) or math.isnan(pvalueStudent):
-                message = f'Could not compute Student test for line {lineId}, perhaps not enough vertices : try with a lower interval'
-                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
-                lineResults['Student'] = ''
-                lineResults['Student p-value'] = ''
-            else:
-                lineResults['Student'] = round(statStudent, 6)
-                lineResults['Student p-value'] = round(pvalueStudent, 6)
-#            try:
-#                statStudent, pvalueStudent = stats.ttest_rel(line1, line2)
-#                lineResults['Student'] = round(statStudent, 6)
-#                lineResults['Student p-value'] = round(pvalueStudent, 6)
-#            except:
-#                message = f'Could not compute Student test for line {lineId}, perhaps not enough vertices : try with a lower interval'
-#                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
+            self.tryTest(lineResults, lineId, line1, line2, 'Student', stats.ttest_rel, [line1, line2], 'Student', 'Student p-value', feedback)
             # perform Wilocoxon test
-            statWilcoxon, pvalueWilcoxon = stats.wilcoxon(line1, line2)
-            if math.isnan(statWilcoxon) or math.isnan(pvalueWilcoxon):
-                message = f'Could not compute Wilocoxon test for line {lineId}, perhaps not enough vertices : try with a lower interval'
-                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
-                lineResults['Wilocoxon'] = ''
-                lineResults['Wilocoxon p-value'] = ''
-            else:
-                lineResults['Wilocoxon'] = round(statWilcoxon, 6)
-                lineResults['Wilocoxon p-value'] = round(pvalueWilcoxon, 6)
-#            try:
-#                statWilcoxon, pvalueWilcoxon = stats.wilcoxon(line1, line2)
-#                lineResults['Wilcoxon'] = round(statWilcoxon, 6)
-#                lineResults['Wilcoxon p-value'] = round(pvalueWilcoxon, 6)
-#            except:
-#                message = f'Could not compute Wilocoxon test for line {lineId}, perhaps not enough vertices : try with a lower interval'
-#                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
+            self.tryTest(lineResults, lineId, line1, line2, 'Wilcoxon', stats.wilcoxon, [line1, line2], 'Wilcoxon', 'Wilcoxon p-value', feedback)
             # add current line results to dfResults
             rows_list.append(lineResults)
         # add all line to final df
         dfResults = pd.DataFrame(rows_list)
         return dfResults
+    
+    # try a given statistic test, write results in results dictionary
+    def tryTest(self, lineResults, lineId, line1, line2, testName, testFunction, inputList, resultName, pvalueName, feedback):
+        # try to compute statistical test
+        try:
+            stat, pvalue = testFunction(*inputList)
+            if math.isnan(stat) or math.isnan(pvalue):
+                raise
+            # if everything is ok, stores results in result dictionary lineResults
+            else:
+                lineResults[resultName] = round(stat, 6)
+                lineResults[pvalueName] = round(pvalue, 6)
+        # if test could not be computed or returned no value
+        except:
+            message = f'Could not compute {testName} test for line {lineId}, perhaps not enough vertices : try with a lower interval'
+            feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
+            lineResults[resultName] = 'nan'
+            lineResults[pvalueName] = 'nan'
     
     # create CSV file form result array
     def createCSV(self, output_folder, csv_name, csv_content):
