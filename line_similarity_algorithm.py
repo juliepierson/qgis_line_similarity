@@ -32,39 +32,32 @@ __revision__ = '$Format:%H$'
 
 import math
 import pandas as pd
-import numpy as np
 import plotly.express as px
 from scipy import stats
-
+from functools import reduce
+from os import path, mkdir
+import processing
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import (QgsProcessing,
-                       QgsMessageLog,
                        QgsProcessingAlgorithm,
                        QgsProcessingParameterVectorLayer,
                        QgsProcessingParameterField,
                        QgsProcessingParameterFolderDestination,
                        QgsProperty,
-                       QgsProject,
                        QgsVectorLayer,
                        QgsProcessingOutputMultipleLayers,
-                       QgsProcessingContext)
-import processing
-import qgis.utils
+                       QgsProcessingContext,
+                       QgsProcessingParameterDistance)
 
         
 class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
     """
-    This is an example algorithm that takes a vector layer and
-    creates a new identical one.
-
-    It is meant to be used as an example of how to create your own
-    algorithms and explain methods and variables used to do it. An
-    algorithm like this will be available in all elements, and there
-    is not need for additional work.
-
-    All Processing algorithms should extend the QgsProcessingAlgorithm
-    class.
+    This script measures shape similarity between line geometries 2-by-2, 
+    independently of translation, scale or rotation.
+    See https://github.com/juliepierson/qgis_line_similarity for more details
     """
+    # Save reference to the QGIS interface
+#    self.iface = iface
 
     # Constants used to refer to parameters and outputs. They will be
     # used when calling the algorithm from another algorithm, or when
@@ -74,6 +67,7 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
     INPUT2 = 'INPUT2'
     ID_INPUT1 = 'ID_INPUT1'
     ID_INPUT2 = 'ID_INPUT2'
+    INTERVAL = 'INTERVAL'
     OUTPUT_FOLDER = 'OUTPUT_FOLDER'
     OUTPUT_LAYERS = 'OUTPUT_LAYERS'
 
@@ -117,7 +111,15 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
                 self.INPUT2
             )
         )
-
+        # input interval measure
+        self.addParameter(
+            QgsProcessingParameterDistance(
+                self.INTERVAL,
+                self.tr('Interval used to densify vertexes (based on layer 1'),
+                '',
+                self.INPUT1
+            )
+        )
         # output folder for CSV
         self.addParameter(
             QgsProcessingParameterFolderDestination(
@@ -139,14 +141,12 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
         Here is where the processing itself takes place.
         """
         
-        interval = 1000 # TODO : make it a parameter
-
         # Retrieve inputs and output
         layer1 = self.parameterAsVectorLayer(parameters, self.INPUT1, context)
         field1 = self.parameterAsString(parameters, self.ID_INPUT1, context)
         layer2 = self.parameterAsVectorLayer(parameters, self.INPUT2, context)
         field2 = self.parameterAsString(parameters, self.ID_INPUT2, context)
-#        output_file = self.parameterAsFileOutput(parameters, self.OUTPUT_HTML_FILE, context)
+        interval = self.parameterAsInt(parameters, self.INTERVAL, context)
         output_folder = self.parameterAsFile(parameters, self.OUTPUT_FOLDER, context)
 
         # LET'S GO !
@@ -161,7 +161,12 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
         # retrieves list of line ids from lineLength dictionaries
         lineIds1 = lineLength1.keys()
         lineIds2 = lineLength2.keys()
-        # TODO : check that lineIds1 and lineIds2 are the same
+        # check that lineIds1 and lineIds2 are the same
+        if set(lineIds1) != set(lineIds2):
+            message = 'Lines from input layers do not have the same ids : for each line in layer 1 there should be a line in layer 2 with same id (and vice versa)'
+#            iface.messageBar().pushMessage('Line Similarity', message, level=Qgis.Critical) # does not work ??
+            feedback.reportError(QCoreApplication.translate('Line Similarity', message))
+            return {}
         
         # densify line vertexes so that each line in layer 1 gets one vertex every chosen interval
         # and each line in layer 2 get as many vertex as line with same id in layer 1
@@ -189,37 +194,21 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
         df, df1, df2 = self.createDataframe(pointInfos1, pointInfos2, layer1.name(), layer2.name())
         
         # create plots for each line, distance as x and angle as y, 
-        # TODO : continuous line for layer 1 and dots for layer 2, same color for same id
         # this step is optional, only for visualising results
-        self.plotLine(df)
+        self.plotLine(df, df1, df2, layer1.name(), layer2.name())
         
         # create one result dataframe : 1st column for line id, next columns for stat results
-        dfResults = self.getStatResults(df1, df2, lineIds1)
-        
-        # calculate spearman coefficient and p-value
-#        statSpearman, pvalueSpearman = self.corrSpearman(dfCorr1, dfCorr2)
-#        results['Spearman'] = statSpearman
-#        results['p-value Spearman'] = pvalueSpearman
-        
-#        # calculate Shapiro test and p-value
-#        statShapiro, pvalueShapiro = self.shapiroTest(dfCorr)
-#        results['Shapiro'] = statShapiro
-#        results['p-value Shapiro'] = pvalueShapiro
-#        
-#        # calculate Student test and p-value
-#        statStudent, pvalueStudent = self.studentTest(dfCorr)
-#        results['Sudent'] = statStudent
-#        results['p-value Student'] = pvalueStudent
-#        
-#        # calculate Student test and p-value
-#        statWilcoxon, pvalueWilcoxon = self.wilcoxonTest(dfCorr)
-#        results['Wilcoxon'] = statWilcoxon
-#        results['p-value Wilcoxon'] = pvalueWilcoxon
+        dfResults = self.getStatResults(df1, df2, lineIds1, feedback)
         
         # reurn results
         if output_folder:
-            # create csv from dataframe, in output folder
-            self.createCSV(output_folder, "toto", dfResults)
+            # create csv for layer 1 and 2, used to compute statistics
+            self.createCSV(output_folder, "layer1", df1)
+            self.createCSV(output_folder, "layer2", df2)
+            # create csv for statistical results, in output folder
+            self.createCSV(output_folder, "similarity", dfResults)
+            message = f'CSV results were created in folder {output_folder}'
+            feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
 
         return {}
     
@@ -234,6 +223,7 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
             lineLength[idValue] = geom.length()
         return lineLength
     
+    # create point layers for each input layer by adding vertex at given interval in layer 1
     def densifyLines(self, layer1, layer2, field2, lineLength1, lineLength2, distance, context, feedback):
         # add vertex at given interval (distance parameter) for layer 1 with pointsalonglines processing algorithm
         param1 = {'INPUT':layer1,
@@ -243,34 +233,29 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
                   'OUTPUT':'layer 1 densify'}
         res = processing.run("native:pointsalonglines", param1, context=context, feedback=feedback)
         layer1densify = res['OUTPUT']
-        # count vertex for each line in layer 1
-        nbVertexLayer1 = {}
-        for key, value in lineLength1.items():
-            nbVertexLayer1[key] = math.floor(value / distance) + 1
         # get intervals at which points must be created in layer 2 
         # so that each line gets as many vertex as line with same id in layer1
         intervalLayer2 = {}
-        for key, value in nbVertexLayer1.items():
-            intervalLayer2[key] = math.floor(lineLength2[key] / value) + 1
+        for lineid in lineLength1.keys():
+            intervalLayer2[lineid] = lineLength2[lineid] * distance / lineLength1[lineid]
         # add vertex for layer 2 with pointsalongline processing algorithm
-        mymap = []
-        for k, v in intervalLayer2.items():
-            mymap.extend([k, v])
-        mymap = tuple(mymap)
+        # this is a complicated expression so that for each line entity the distance is equal to to the value of the intervalLayer2 item that has the line id as key
+        # https://gis.stackexchange.com/questions/383435/accessing-python-dictionary-by-field-value-in-qgsexpression/383469#383469
+        qgis_expr = f'map_get(map{reduce(lambda x, y: x + y, intervalLayer2.items())}, {field2})'
         param2 = {'INPUT':layer2,
-                  'DISTANCE': QgsProperty.fromExpression("map_get(map{}, {})".format(str(mymap), field2)) ,
+                  'DISTANCE': QgsProperty.fromExpression(qgis_expr),
                   'START_OFFSET':0,
                   'END_OFFSET':0,
                   'OUTPUT':'layer 2 densify'}
         res = processing.run("native:pointsalonglines", param2, context=context, feedback=feedback)
         layer2densify = res['OUTPUT']
-        # load the new densified layers
-        # https://gis.stackexchange.com/a/343404
+        # return resulting point layers
         layer1densify = QgsVectorLayer(layer1densify, "layer 1 densify", "ogr")
         layer2densify = QgsVectorLayer(layer2densify, "layer 2 densify", "ogr")
+        # these layers do not get loaded in QGIS unless code below is uncommented
 #        output_layers = []
-#        output_layers.extend([layer1densify, layer2densify])
-#        context.temporaryLayerStore().addMapLayers([layer1densify, layer2densify])
+#        output_layers.append(layer1densify)
+#        context.temporaryLayerStore().addMapLayer(layer1densify)
 #        context.addLayerToLoadOnCompletion(
 #            layer1densify.id(),
 #            QgsProcessingContext.LayerDetails(
@@ -279,6 +264,8 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
 #                self.OUTPUT_LAYERS
 #            )
 #        )
+#        output_layers.append(layer2densify)
+#        context.temporaryLayerStore().addMapLayer(layer2densify)
 #        context.addLayerToLoadOnCompletion(
 #            layer2densify.id(),
 #            QgsProcessingContext.LayerDetails(
@@ -286,8 +273,7 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
 #                context.project(),
 #                self.OUTPUT_LAYERS
 #            )
-#        )
-        #return {self.OUTPUT_LAYERS: output_layers}
+#        )    
         return layer1densify, layer2densify
     
     def lineFromPoint(self, layerDensifyPt, idfield, layername, context, feedback):
@@ -301,6 +287,7 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
         res = processing.run("qgis:pointstopath", param, context=context, feedback=feedback)
         layerDensifyLn = res['OUTPUT']
         # load resulting layer
+        # https://gis.stackexchange.com/a/343404
         layerDensifyLn = QgsVectorLayer(layerDensifyLn, layername, "ogr")
         output_layers = []
         output_layers.append(layerDensifyLn)
@@ -385,9 +372,13 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
     
     # create line plot with distance as x and angle as y, for the 2 layers
     # this step is optional, only for visualising results
-    def plotLine(self, df):
+    def plotLine(self, df, df1, df2, layer1name, layer2name):
+        # add dash column to dataframe so that layer 1 = full line and layer 2 = dashed line
+        df['dash_line'] = df['layer']
+        df.loc[df['dash_line']  == layer1name, 'dash_line'] = ''
+        df.loc[df['dash_line']  == layer2name, 'dash_line'] = 'dash'
         # create plot
-        fig = px.line(df, x = "distance", y = "angle", color = "layer", line_group = "line id", hover_name = "line id")
+        fig = px.line(df, x = "distance", y = "angle", color = "line id", line_dash = 'dash_line', line_group = "line id", hover_name = "layer")
         # sets min, max and step for the axes
         fig.update_layout(xaxis_range=[0, 1])
         fig.update_layout(yaxis_range=[0, 360])
@@ -397,12 +388,11 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
      
     # from dataframes df1 and df2, create dataframe with statistical results
     # one row per line id, one column per statistical test
-    def getStatResults(self, df1, df2, lineIds1):
+    def getStatResults(self, df1, df2, lineIds1, feedback):
         # empty list for lines to add to dfResults
         rows_list = []
         # for each couple of lines with same id 
         for lineId in lineIds1:
-            QgsMessageLog.logMessage(('lineId : ' + str(lineId)), 'LineSimilarity')
             # create empty dic for current line id results
             lineResults = {}
             # add line id in lineResults
@@ -413,80 +403,97 @@ class LineSimilarityAlgorithm(QgsProcessingAlgorithm):
             # get line with current id for layer 2
             line2 = df2.loc[df2['line id'] == lineId]
             line2 = list(line2['angle'])
-            QgsMessageLog.logMessage(('line1 : ' + str(line1)), 'LineSimilarity')
-            QgsMessageLog.logMessage(('line2 : ' + str(line2)), 'LineSimilarity')
             # Spearman test
             statSpearman, pvalueSpearman = stats.spearmanr(line1, line2)
-            lineResults['Spearman'] = round(statSpearman, 6)
-            lineResults['Spearman p-value'] = round(pvalueSpearman, 6)
+            if math.isnan(statSpearman) or math.isnan(pvalueSpearman):
+                message = f'Could not compute Spearman test for line {lineId}, perhaps not enough vertices : try with a lower interval'
+                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
+                lineResults['Spearman'] = ''
+                lineResults['Spearman p-value'] = ''
+            else:
+                lineResults['Spearman'] = round(statSpearman, 6)
+                lineResults['Spearman p-value'] = round(pvalueSpearman, 6)
             # Shapiro test
             statShapiro, pvalueShapiro = stats.shapiro(line1)
-            lineResults['Shapiro line 1'] = round(statShapiro, 6)
-            lineResults['Shapiro p-value line 1'] = round(pvalueShapiro, 6)
+            if math.isnan(statShapiro) or math.isnan(pvalueShapiro):
+                message = f'Could not compute Shapiro test for line {lineId} in layer 1, perhaps not enough vertices : try with a lower interval'
+                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
+                lineResults['Shapiro line 1'] = ''
+                lineResults['Shapiro p-value line 1'] = ''
+            else:
+                lineResults['Shapiro line 1'] = round(statShapiro, 6)
+                lineResults['Shapiro p-value line 1'] = round(pvalueShapiro, 6)
             statShapiro, pvalueShapiro = stats.shapiro(line2)
-            lineResults['Shapiro line 2'] = round(statShapiro, 6)
-            lineResults['Shapiro p-value line 2'] = round(pvalueShapiro, 6)
+            if math.isnan(statShapiro) or math.isnan(pvalueShapiro):
+                message = f'Could not compute Shapiro test for line {lineId} in layer 2, perhaps not enough vertices : try with a lower interval'
+                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
+                lineResults['Shapiro line 2'] = ''
+                lineResults['Shapiro p-value line 2'] = ''
+            else:
+                lineResults['Shapiro line 2'] = round(statShapiro, 6)
+                lineResults['Shapiro p-value line 2'] = round(pvalueShapiro, 6)
+#            try:
+#                statShapiro, pvalueShapiro = stats.shapiro(line1)
+#                lineResults['Shapiro line 1'] = round(statShapiro, 6)
+#                lineResults['Shapiro p-value line 1'] = round(pvalueShapiro, 6)
+#                statShapiro, pvalueShapiro = stats.shapiro(line2)
+#                lineResults['Shapiro line 2'] = round(statShapiro, 6)
+#                lineResults['Shapiro p-value line 2'] = round(pvalueShapiro, 6)
+#            except:
+#                message = f'Could not compute Shapiro test for line {lineId}, perhaps not enough vertices : try with a lower interval'
+#                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
             # Student Test
             statStudent, pvalueStudent = stats.ttest_rel(line1, line2)
-            lineResults['Student'] = round(statStudent, 6)
-            lineResults['Student p-value'] = round(pvalueStudent, 6)
+            if math.isnan(statStudent) or math.isnan(pvalueStudent):
+                message = f'Could not compute Student test for line {lineId}, perhaps not enough vertices : try with a lower interval'
+                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
+                lineResults['Student'] = ''
+                lineResults['Student p-value'] = ''
+            else:
+                lineResults['Student'] = round(statStudent, 6)
+                lineResults['Student p-value'] = round(pvalueStudent, 6)
+#            try:
+#                statStudent, pvalueStudent = stats.ttest_rel(line1, line2)
+#                lineResults['Student'] = round(statStudent, 6)
+#                lineResults['Student p-value'] = round(pvalueStudent, 6)
+#            except:
+#                message = f'Could not compute Student test for line {lineId}, perhaps not enough vertices : try with a lower interval'
+#                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
             # perform Wilocoxon test
             statWilcoxon, pvalueWilcoxon = stats.wilcoxon(line1, line2)
-            lineResults['Wilcoxon'] = round(statWilcoxon, 6)
-            lineResults['Wilcoxon p-value'] = round(pvalueWilcoxon, 6)
+            if math.isnan(statWilcoxon) or math.isnan(pvalueWilcoxon):
+                message = f'Could not compute Wilocoxon test for line {lineId}, perhaps not enough vertices : try with a lower interval'
+                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
+                lineResults['Wilocoxon'] = ''
+                lineResults['Wilocoxon p-value'] = ''
+            else:
+                lineResults['Wilocoxon'] = round(statWilcoxon, 6)
+                lineResults['Wilocoxon p-value'] = round(pvalueWilcoxon, 6)
+#            try:
+#                statWilcoxon, pvalueWilcoxon = stats.wilcoxon(line1, line2)
+#                lineResults['Wilcoxon'] = round(statWilcoxon, 6)
+#                lineResults['Wilcoxon p-value'] = round(pvalueWilcoxon, 6)
+#            except:
+#                message = f'Could not compute Wilocoxon test for line {lineId}, perhaps not enough vertices : try with a lower interval'
+#                feedback.pushInfo(QCoreApplication.translate('Line Similarity', message))
             # add current line results to dfResults
             rows_list.append(lineResults)
         # add all line to final df
         dfResults = pd.DataFrame(rows_list)
         return dfResults
-        
-#    # calculate correlation between the 2 variables with Spearman coefficient
-#    def corrSpearman(self, dfCorr1, dfCorr2):
-#        # supprime la colonne x de chaque dataframe
-#        dfSpearman1 = dfCorr1.drop(columns = ['x'])
-#        dfSpearman2 = dfCorr2.drop(columns = ['x'])
-#        # convertit le dataframe en array numpy
-#        arraySpearman1 = dfSpearman1.values
-#        arraySpearman2 = dfSpearman2.values
-#        # Spearman
-#        statSpearman, pvalueSpearman = stats.spearmanr(arraySpearman1, arraySpearman2)
-#        return statSpearman, pvalueSpearman
-#    
-#    # calculate Shapiro test to know if it's ok to proceed with Student test
-#    def shapiroTest(self, dfCorr):
-#        dfShapiro = pd.concat([dfCorr['y1'], dfCorr['y2']], axis = 1, keys=['y1', 'y2'])
-#        statShapiro, pvalueShapiro = stats.shapiro(dfShapiro)
-#        return statShapiro, pvalueShapiro
-#    
-#    # calculate correlation between the 2 variables with paired Student test
-#    def studentTest(self, dfCorr):
-#        statStudent, pvalueStudent = stats.ttest_rel(dfCorr['y1'], dfCorr['y2'])
-#        return statStudent, pvalueStudent
-#    
-#    # calculate correlation between the 2 variables with Wilcoxon test
-#    def wilcoxonTest(self, dfCorr):
-#        statWilcoxon, pvalueWilcoxon = stats.wilcoxon(dfCorr['y1'], dfCorr['y2'])
-#        return statWilcoxon, pvalueWilcoxon
     
     # create CSV file form result array
     def createCSV(self, output_folder, csv_name, csv_content):
+        # if output folder do not exist, create it (save to temporary folder)
+        if not path.exists(output_folder):
+            mkdir(output_folder)
         csv_file = output_folder + '/' + csv_name + ".csv"
-        #np.savetxt(csv_name, csv_content, delimiter=",")
         pd.DataFrame(csv_content).to_csv(csv_file, index=False)
-    
-#    def createHTML(self, outputFile, results, layer1, layer2):
-#        with codecs.open(outputFile, 'w', encoding='utf-8') as f:
-#            f.write('<html><head>\n')
-#            f.write('<meta http-equiv="Content-Type" content="text/html; \
-#                    charset=utf-8" /></head><body>\n')
-#            entete = 'calcul de similarité entre %s et %s :\n' % (layer1, layer2)
-#            f.write(entete)
-#            for k, v in results.items():
-#                f.write('<p>' + str(k) + ' : ' + str(v) + '</p>\n')
-#            f.write('</body></html>\n')
             
     def shortHelpString(self):
-        return self.tr('''This algorithm takes 2 line layers as input, with only 1 entity in each layer. Layers are standardised and then compared using spearman correlation coefficient. Output is spearman coefficient and p-value, and a plot of the 2 standardised lines. The result is independant of rotation, scale and translation.''')
+        return self.tr('''This algorithm takes 2 line layers as input, with their id field.
+                       Lines from each layer with same id get compared 2 by 2, and statistical results for each line pair computed in output csv file.
+                       To compare lines, each line in same pair gets same number of vertex, according to interval specified (used for layer 1).''')
     
     def helpUrl(self):
         return "https://github.com/juliepierson/qgis_line_similarity"
