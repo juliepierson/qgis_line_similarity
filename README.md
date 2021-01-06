@@ -27,9 +27,11 @@ These 2 steps allows for the similarity results to be independent of scale, rota
 
 * 3rd step is then calculating statistical tests for each line pair : Spearman, Student and Wilcoxon. Shapiro test is also performed  to know if it's ok to use Student results.
 
-Output is a CSV with one row per line id, and one column for each statistical result.
+Output is a CSV file with one row per line id, and one column for each statistical result.
 
-The plugin also output the lines created in step 1 as temporary layers, and a HTML plot of the standardized lines create in step 2 (using plotly).
+Input data used for the statistical test is also generated as 2 CSV files, one for each input layer.
+
+In addition, this plugin also output the lines created in step 1 as temporary layers, and a HTML plot of the standardized lines create in step 2 (using plotly).
 
 Do not hesitate to message me if there is any problem, or if you have any ideas to make it better ! It is experimental work.
 

@@ -10,7 +10,7 @@ version=0.2
 author=Julie Pierson, UMR 6554 LETG, CNRS
 email=julie.pierson@univ-brest.fr
 
-about=This script measures shape similarity between line geometries 2-by-2, independently of translation, scale or rotation. It takes 2 line layers as input, and their id field. Lines from each layer with same id get compared, and similarity measures using different statistical tests are computed. Output is a CSV with the statistical results and p-values. Statistical tests used are Spearman, Student and Wilcoxon. Thanks to Grégoire Le Campion (UMR Passages, CNRS) for his input on statistics ! This plugin is added in processing, in a provider called shape analysis.
+about=This script measures shape similarity between line geometries 2-by-2, independently of translation, scale or rotation. It takes 2 line layers as input, and their id field. Lines from each layer with same id get compared, and similarity measures using different statistical tests are computed. Output is a CSV with the statistical results and p-values, and 2 CSV with the data used to compute the tests (one for each layer). Statistical tests used are Spearman, Student and Wilcoxon. Thanks to Grégoire Le Campion (UMR Passages, CNRS) for his input on statistics ! This plugin is added in processing, in a provider called shape analysis.
 
 tracker=https://github.com/juliepierson/qgis_line_similarity
 repository=https://github.com/juliepierson/qgis_line_similarity
